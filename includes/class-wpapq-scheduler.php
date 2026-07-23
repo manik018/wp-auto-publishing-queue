@@ -104,18 +104,26 @@ class WPAPQ_Scheduler {
 		}
 
 		$window     = $this->get_effective_window( $date, $settings );
-		$max_fit    = $this->get_max_slots_that_fit( $window['start'], $window['end'], $settings['minimum_gap_minutes'] );
+		$occupied   = $this->get_occupied_minutes_for_date( $date );
+		$segments   = $this->get_free_segments( $window['start'], $window['end'], $settings['minimum_gap_minutes'], $occupied );
+		$max_fit    = 0;
+
+		foreach ( $segments as $segment ) {
+			$max_fit += $this->get_max_slots_that_fit( $segment[0], $segment[1], $settings['minimum_gap_minutes'] );
+		}
+
 		$slot_count = min( $remaining_daily, count( $eligible_items ), $max_fit );
 
 		if ( 0 === $slot_count ) {
 			return $result;
 		}
 
-		$slot_minutes = $this->generate_random_slot_minutes(
+		$slot_minutes = $this->generate_random_slot_minutes_avoiding(
 			$window['start'],
 			$window['end'],
 			$settings['minimum_gap_minutes'],
-			$slot_count
+			$slot_count,
+			$occupied
 		);
 
 		$table = $this->database->get_queue_table();
@@ -534,6 +542,48 @@ class WPAPQ_Scheduler {
 	}
 
 	/**
+	 * Get occupied scheduled minutes for a date.
+	 *
+	 * @param string $date Date.
+	 * @return array
+	 */
+	private function get_occupied_minutes_for_date( $date ) {
+		global $wpdb;
+
+		$table = $this->database->get_queue_table();
+		$range = $this->get_date_range( $date );
+		$rows  = $wpdb->get_col(
+			$wpdb->prepare(
+				"SELECT scheduled_at
+				FROM {$table}
+				WHERE status IN (%s, %s)
+					AND scheduled_at IS NOT NULL
+					AND scheduled_at >= %s
+					AND scheduled_at <= %s
+				ORDER BY scheduled_at ASC, id ASC",
+				'scheduled',
+				'retrying',
+				$range['start'],
+				$range['end']
+			)
+		);
+
+		$minutes = array();
+
+		foreach ( $rows as $scheduled_at ) {
+			$minute = $this->time_to_minutes( substr( $scheduled_at, 11, 5 ) );
+
+			if ( null !== $minute ) {
+				$minutes[] = $minute;
+			}
+		}
+
+		sort( $minutes, SORT_NUMERIC );
+
+		return $minutes;
+	}
+
+	/**
 	 * Get eligible queued draft posts, cleaning invalid queue rows.
 	 *
 	 * @param int $limit Needed item count.
@@ -590,6 +640,143 @@ class WPAPQ_Scheduler {
 		}
 
 		return (int) floor( ( $end - $start ) / $gap ) + 1;
+	}
+
+	/**
+	 * Get free scheduling segments after excluding occupied minutes.
+	 *
+	 * @param int   $start Start minute.
+	 * @param int   $end End minute.
+	 * @param int   $gap Minimum gap.
+	 * @param array $occupied Occupied minutes.
+	 * @return array
+	 */
+	private function get_free_segments( $start, $end, $gap, $occupied ) {
+		if ( $start > $end ) {
+			return array();
+		}
+
+		$blocked = array();
+
+		foreach ( $occupied as $minute ) {
+			$blocked_start = max( $start, (int) $minute - $gap + 1 );
+			$blocked_end   = min( $end, (int) $minute + $gap - 1 );
+
+			if ( $blocked_start <= $blocked_end ) {
+				$blocked[] = array( $blocked_start, $blocked_end );
+			}
+		}
+
+		if ( empty( $blocked ) ) {
+			return array( array( $start, $end ) );
+		}
+
+		usort(
+			$blocked,
+			function ( $a, $b ) {
+				if ( $a[0] === $b[0] ) {
+					return $a[1] - $b[1];
+				}
+
+				return $a[0] - $b[0];
+			}
+		);
+
+		$merged = array();
+
+		foreach ( $blocked as $interval ) {
+			$last_index = count( $merged ) - 1;
+
+			if ( empty( $merged ) || $interval[0] > ( $merged[ $last_index ][1] + 1 ) ) {
+				$merged[] = $interval;
+				continue;
+			}
+
+			$merged[ $last_index ][1] = max( $merged[ $last_index ][1], $interval[1] );
+		}
+
+		$segments = array();
+		$current  = $start;
+
+		foreach ( $merged as $interval ) {
+			if ( $current < $interval[0] ) {
+				$segments[] = array( $current, $interval[0] - 1 );
+			}
+
+			$current = max( $current, $interval[1] + 1 );
+		}
+
+		if ( $current <= $end ) {
+			$segments[] = array( $current, $end );
+		}
+
+		return $segments;
+	}
+
+	/**
+	 * Generate sorted random slot minutes while avoiding occupied minutes.
+	 *
+	 * @param int   $start Start minute.
+	 * @param int   $end End minute.
+	 * @param int   $gap Minimum gap.
+	 * @param int   $count Slot count.
+	 * @param array $occupied Occupied minutes.
+	 * @return array
+	 */
+	private function generate_random_slot_minutes_avoiding( $start, $end, $gap, $count, $occupied ) {
+		if ( $count <= 0 ) {
+			return array();
+		}
+
+		$segments   = $this->get_free_segments( $start, $end, $gap, $occupied );
+		$capacities = array();
+		$total      = 0;
+
+		foreach ( $segments as $index => $segment ) {
+			$capacities[ $index ] = $this->get_max_slots_that_fit( $segment[0], $segment[1], $gap );
+			$total               += $capacities[ $index ];
+		}
+
+		$count       = min( $count, $total );
+		$allocations = array_fill( 0, count( $segments ), 0 );
+
+		for ( $allocated = 0; $allocated < $count; $allocated++ ) {
+			$best_index     = null;
+			$best_remaining = 0;
+
+			foreach ( $capacities as $index => $capacity ) {
+				$remaining = $capacity - $allocations[ $index ];
+
+				if ( $remaining > $best_remaining ) {
+					$best_index     = $index;
+					$best_remaining = $remaining;
+				}
+			}
+
+			if ( null === $best_index ) {
+				break;
+			}
+
+			$allocations[ $best_index ]++;
+		}
+
+		$slots = array();
+
+		foreach ( $allocations as $index => $allocation ) {
+			if ( 0 === $allocation ) {
+				continue;
+			}
+
+			$segment = $segments[ $index ];
+			$slots   = array_merge(
+				$slots,
+				$this->generate_random_slot_minutes( $segment[0], $segment[1], $gap, $allocation )
+			);
+		}
+
+		sort( $slots, SORT_NUMERIC );
+
+		return $slots;
 	}
 
 	/**

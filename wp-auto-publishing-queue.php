@@ -3,7 +3,7 @@
  * Plugin Name: WP Auto Publishing Queue
  * Plugin URI: https://github.com/manik018/wp-auto-publishing-queue
  * Description: Automatically publish queued draft posts on a controlled daily schedule using WordPress Cron.
- * Version: 1.0.0
+ * Version: 1.0.1
  * Requires at least: 6.0
  * Requires PHP: 7.4
  * Author: Md. Fakharuddin (Manik)
@@ -18,7 +18,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 }
 
 if ( ! defined( 'WPAPQ_VERSION' ) ) {
-	define( 'WPAPQ_VERSION', '1.0.0' );
+	define( 'WPAPQ_VERSION', '1.0.1' );
 }
 
 if ( ! defined( 'WPAPQ_DB_VERSION' ) ) {

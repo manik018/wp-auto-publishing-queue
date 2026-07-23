@@ -163,3 +163,7 @@ Only draft posts can remain queued. If a queued post is manually published, tras
 
 = 1.0.0 =
 * Production MVP release.
+
+Stable tag:
+= 1.0.1 =
+   * Fix: minimum gap between posts is now enforced across separate schedule generation calls, not just within a single call.
