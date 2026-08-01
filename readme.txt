@@ -164,26 +164,16 @@ Only draft posts can remain queued. If a queued post is manually published, tras
 
 == Changelog ==
 
-<<<<<<< HEAD
+== Changelog ==
+
 = 1.1.0 =
 * New: Clear All Logs button on the Publishing Logs page.
 * New: Random posts-per-day mode (choose a min/max range instead of a fixed number).
 * New: Block publishing on specific weekdays and/or specific dates.
 * New: Posts already scheduled on a date that becomes blocked are automatically released and rescheduled onto the next valid day, respecting the normal gap and window rules.
-=======
+
 = 1.0.1 =
 * Fix: minimum gap between posts is now enforced across separate schedule generation calls, not just within a single call.
 
 = 1.0.0 =
 * Production MVP release.
->>>>>>> 06047b1f19de6ec9eece0795efece41fd5803fdb
-
-= 1.0.1 =
-<<<<<<< HEAD
-* Fix: minimum gap between posts is now enforced across separate schedule generation calls, not just within a single call.
-
-= 1.0.0 =
-* Production MVP release.
-=======
-   * Fix: minimum gap between posts is now enforced across separate schedule generation calls, not just within a single call.
->>>>>>> 06047b1f19de6ec9eece0795efece41fd5803fdb
