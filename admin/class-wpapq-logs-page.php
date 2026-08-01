@@ -29,6 +29,42 @@ class WPAPQ_Logs_Page {
 	}
 
 	/**
+	 * Register hooks.
+	 */
+	public function run() {
+		add_action( 'admin_post_wpapq_clear_logs', array( $this, 'handle_clear_logs' ) );
+	}
+
+	/**
+	 * Handle clearing all logs.
+	 */
+	public function handle_clear_logs() {
+		if ( ! current_user_can( 'manage_options' ) ) {
+			wp_safe_redirect(
+				add_query_arg(
+					'wpapq_notice',
+					'permission_denied',
+					remove_query_arg( 'wpapq_notice', admin_url( 'admin.php?page=wpapq-logs' ) )
+				)
+			);
+			exit;
+		}
+
+		check_admin_referer( 'wpapq_clear_logs' );
+
+		$this->logger->clear_all_logs();
+
+		wp_safe_redirect(
+			add_query_arg(
+				'wpapq_notice',
+				'logs_cleared',
+				remove_query_arg( 'wpapq_notice', admin_url( 'admin.php?page=wpapq-logs' ) )
+			)
+		);
+		exit;
+	}
+
+	/**
 	 * Render the logs page.
 	 */
 	public function render_page() {
@@ -57,7 +93,8 @@ class WPAPQ_Logs_Page {
 		?>
 		<div class="wrap">
 			<h1><?php echo esc_html__( 'Publishing Logs', 'wp-auto-publishing-queue' ); ?></h1>
-			<?php $this->render_filters( $filters ); ?>
+			<?php $this->render_notices(); ?>
+			<?php $this->render_filters( $filters, $this->logger->get_log_count() ); ?>
 			<p>
 				<?php
 				printf(
@@ -106,8 +143,9 @@ class WPAPQ_Logs_Page {
 	 * Render filter controls.
 	 *
 	 * @param array $filters Filters.
+	 * @param int   $log_count Log count.
 	 */
-	private function render_filters( $filters ) {
+	private function render_filters( $filters, $log_count ) {
 		?>
 		<form method="get">
 			<input type="hidden" name="page" value="wpapq-logs" />
@@ -133,8 +171,37 @@ class WPAPQ_Logs_Page {
 			<a href="<?php echo esc_url( admin_url( 'admin.php?page=wpapq-logs' ) ); ?>">
 				<?php echo esc_html__( 'Reset Filters', 'wp-auto-publishing-queue' ); ?>
 			</a>
+			<?php if ( $log_count > 0 ) : ?>
+				<a
+					class="button button-secondary"
+					href="<?php echo esc_url( wp_nonce_url( admin_url( 'admin-post.php?action=wpapq_clear_logs' ), 'wpapq_clear_logs' ) ); ?>"
+					onclick="return confirm( '<?php echo esc_js( __( 'This will permanently delete all publishing logs. This cannot be undone. Continue?', 'wp-auto-publishing-queue' ) ); ?>' );"
+				>
+					<?php echo esc_html__( 'Clear All Logs', 'wp-auto-publishing-queue' ); ?>
+				</a>
+			<?php endif; ?>
 		</form>
 		<?php
+	}
+
+	/**
+	 * Render page notices.
+	 */
+	private function render_notices() {
+		$notice = isset( $_GET['wpapq_notice'] ) ? sanitize_key( wp_unslash( $_GET['wpapq_notice'] ) ) : '';
+
+		if ( 'logs_cleared' === $notice ) {
+			$message = __( 'All publishing logs have been cleared.', 'wp-auto-publishing-queue' );
+		} elseif ( 'permission_denied' === $notice ) {
+			$message = __( 'You do not have permission to do this.', 'wp-auto-publishing-queue' );
+		} else {
+			return;
+		}
+
+		printf(
+			'<div class="notice notice-success is-dismissible"><p>%s</p></div>',
+			esc_html( $message )
+		);
 	}
 
 	/**

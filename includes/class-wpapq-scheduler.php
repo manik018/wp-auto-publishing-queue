@@ -70,6 +70,10 @@ class WPAPQ_Scheduler {
 			return $settings;
 		}
 
+		if ( $this->is_date_blocked( $date, $settings ) ) {
+			return new WP_Error( 'wpapq_date_blocked', __( 'Publishing is blocked for this date due to your weekday or date blocking settings.', 'wp-auto-publishing-queue' ) );
+		}
+
 		if ( $force ) {
 			$cleared = $this->clear_schedule_for_date( $date );
 
@@ -81,10 +85,11 @@ class WPAPQ_Scheduler {
 		$already_scheduled = $this->count_active_scheduled_for_date( $date );
 		$already_published = $this->logger->count_published_success_for_date( $date );
 		$daily_capacity    = $already_scheduled + $already_published;
-		$remaining_daily   = max( 0, $settings['posts_per_day'] - $daily_capacity );
+		$daily_target      = $this->get_daily_target( $date, $settings );
+		$remaining_daily   = max( 0, $daily_target - $daily_capacity );
 		$result            = array(
 			'date'              => $date,
-			'requested'         => $settings['posts_per_day'],
+			'requested'         => $daily_target,
 			'already_scheduled' => $already_scheduled,
 			'already_published' => $already_published,
 			'daily_capacity'    => $daily_capacity,
@@ -212,6 +217,112 @@ class WPAPQ_Scheduler {
 		}
 
 		return $this->count_active_scheduled_for_date( $date );
+	}
+
+	/**
+	 * Get the daily target for a date.
+	 *
+	 * @param string $date Date.
+	 * @param array  $settings Settings.
+	 * @return int
+	 */
+	public function get_daily_target( $date, array $settings ) {
+		if ( 'random' !== ( $settings['posts_per_day_mode'] ?? 'fixed' ) ) {
+			return (int) $settings['posts_per_day'];
+		}
+
+		$min = min( (int) $settings['posts_per_day_min'], (int) $settings['posts_per_day_max'] );
+		$max = max( (int) $settings['posts_per_day_min'], (int) $settings['posts_per_day_max'] );
+
+		if ( $min === $max ) {
+			return $min;
+		}
+
+		$seed = (int) hexdec( substr( md5( $date . '|' . $min . '|' . $max ), 0, 8 ) );
+		mt_srand( $seed );
+		$target = mt_rand( $min, $max );
+		mt_srand();
+
+		return $target;
+	}
+
+	/**
+	 * Check whether publishing is blocked for a date.
+	 *
+	 * @param string $date Date.
+	 * @param array  $settings Settings.
+	 * @return bool
+	 */
+	public function is_date_blocked( $date, array $settings ) {
+		$date = $this->parse_date( $date );
+
+		if ( is_wp_error( $date ) ) {
+			return false;
+		}
+
+		$blocked_dates = isset( $settings['blocked_dates'] ) && is_array( $settings['blocked_dates'] ) ? $settings['blocked_dates'] : array();
+
+		if ( in_array( $date, $blocked_dates, true ) ) {
+			return true;
+		}
+
+		$blocked_weekdays = isset( $settings['blocked_weekdays'] ) && is_array( $settings['blocked_weekdays'] ) ? array_map( 'absint', $settings['blocked_weekdays'] ) : array();
+		$datetime         = DateTimeImmutable::createFromFormat( '!Y-m-d', $date, WPAPQ_Helper::get_timezone() );
+
+		if ( false === $datetime ) {
+			return false;
+		}
+
+		return in_array( absint( $datetime->format( 'w' ) ), $blocked_weekdays, true );
+	}
+
+	/**
+	 * Release active queue rows whose scheduled date is now blocked, back to queued.
+	 *
+	 * @param array $settings Settings.
+	 * @return int Number of rows released.
+	 */
+	public function release_blocked_schedule( array $settings ) {
+		global $wpdb;
+
+		$table    = $this->database->get_queue_table();
+		$rows     = $wpdb->get_results(
+			$wpdb->prepare(
+				"SELECT id, scheduled_at
+				FROM {$table}
+				WHERE status IN (%s, %s)
+					AND scheduled_at IS NOT NULL",
+				'scheduled',
+				'retrying'
+			)
+		);
+		$released = 0;
+		$now      = current_time( 'mysql' );
+
+		foreach ( $rows as $row ) {
+			$date = substr( $row->scheduled_at, 0, 10 );
+
+			if ( ! $this->is_date_blocked( $date, $settings ) ) {
+				continue;
+			}
+
+			$result = $wpdb->query(
+				$wpdb->prepare(
+					"UPDATE {$table}
+					SET status = %s, scheduled_at = NULL, updated_at = %s
+					WHERE id = %d",
+					'queued',
+					$now,
+					absint( $row->id )
+				)
+			);
+
+			if ( false !== $result && $result > 0 ) {
+				$released++;
+			}
+		}
+
+		return $released;
 	}
 
 	/**
@@ -405,10 +516,14 @@ class WPAPQ_Scheduler {
 			return new WP_Error( 'wpapq_invalid_schedule_settings', __( 'Publishing schedule settings are invalid.', 'wp-auto-publishing-queue' ) );
 		}
 
-		$posts_per_day       = min( max( absint( $settings['posts_per_day'] ), 1 ), 100 );
-		$minimum_gap_minutes = min( max( absint( $settings['minimum_gap_minutes'] ), 1 ), 1440 );
+		$posts_per_day         = min( max( absint( $settings['posts_per_day'] ), 1 ), 100 );
+		$posts_per_day_mode    = in_array( $settings['posts_per_day_mode'] ?? '', array( 'fixed', 'random' ), true ) ? $settings['posts_per_day_mode'] : 'fixed';
+		$posts_per_day_min     = min( max( absint( $settings['posts_per_day_min'] ?? 1 ), 1 ), 100 );
+		$posts_per_day_max     = min( max( absint( $settings['posts_per_day_max'] ?? 5 ), 1 ), 100 );
+		$minimum_gap_minutes   = min( max( absint( $settings['minimum_gap_minutes'] ), 1 ), 1440 );
+		$effective_daily_count = ( 'random' === $posts_per_day_mode ) ? max( $posts_per_day_min, $posts_per_day_max ) : $posts_per_day;
 
-		if ( ( ( $posts_per_day - 1 ) * $minimum_gap_minutes ) > ( $end - $start ) ) {
+		if ( ( ( $effective_daily_count - 1 ) * $minimum_gap_minutes ) > ( $end - $start ) ) {
 			return new WP_Error( 'wpapq_impossible_schedule', __( 'Publishing schedule settings cannot fit the configured number of posts.', 'wp-auto-publishing-queue' ) );
 		}
 
@@ -416,9 +531,14 @@ class WPAPQ_Scheduler {
 			'publishing_start'    => $settings['publishing_start'],
 			'publishing_end'      => $settings['publishing_end'],
 			'posts_per_day'       => $posts_per_day,
+			'posts_per_day_mode'  => $posts_per_day_mode,
+			'posts_per_day_min'   => $posts_per_day_min,
+			'posts_per_day_max'   => $posts_per_day_max,
 			'minimum_gap_minutes' => $minimum_gap_minutes,
 			'start_minutes'       => $start,
 			'end_minutes'         => $end,
+			'blocked_weekdays'    => isset( $settings['blocked_weekdays'] ) && is_array( $settings['blocked_weekdays'] ) ? $settings['blocked_weekdays'] : array(),
+			'blocked_dates'       => isset( $settings['blocked_dates'] ) && is_array( $settings['blocked_dates'] ) ? $settings['blocked_dates'] : array(),
 		);
 	}
 

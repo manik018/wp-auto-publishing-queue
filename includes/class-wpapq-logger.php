@@ -162,6 +162,20 @@ class WPAPQ_Logger {
 	}
 
 	/**
+	 * Clear all publishing logs.
+	 *
+	 * @return bool
+	 */
+	public function clear_all_logs() {
+		global $wpdb;
+
+		$table  = $this->database->get_logs_table();
+		$result = $wpdb->query( "TRUNCATE TABLE {$table}" );
+
+		return false !== $result;
+	}
+
+	/**
 	 * Count successful publish logs for a date.
 	 *
 	 * @param string|null $date Date in Y-m-d format, or null for today.

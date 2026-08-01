@@ -53,6 +53,7 @@ class WPAPQ_Queue_Page {
 		'processor_run',
 		'processor_disabled',
 		'processor_locked',
+		'date_blocked',
 	);
 
 	/**
@@ -90,9 +91,17 @@ class WPAPQ_Queue_Page {
 		$items = $this->queue->get_queued_posts();
 		$count = $this->queue->get_active_queue_count();
 		$failed_count = $this->queue->get_failed_count();
+		$settings = get_option( 'wpapq_settings', array() );
+		$settings = is_array( $settings ) ? array_merge( WPAPQ_Activator::get_default_settings(), $settings ) : WPAPQ_Activator::get_default_settings();
+		$today    = WPAPQ_Helper::get_current_datetime()->format( 'Y-m-d' );
 		?>
 		<div class="wrap">
 			<h1><?php echo esc_html__( 'Publishing Queue', 'wp-auto-publishing-queue' ); ?></h1>
+			<?php if ( $this->scheduler->is_date_blocked( $today, $settings ) ) : ?>
+				<div class="notice notice-warning">
+					<p><?php echo esc_html__( 'Publishing is blocked today due to your weekday or date blocking rules in Settings. No posts will be published today.', 'wp-auto-publishing-queue' ); ?></p>
+				</div>
+			<?php endif; ?>
 			<p>
 				<?php
 				printf(
@@ -640,6 +649,7 @@ class WPAPQ_Queue_Page {
 			'schedule_full'     => __( 'Today\'s schedule already contains the configured number of posts.', 'wp-auto-publishing-queue' ),
 			'schedule_no_slots' => __( 'No additional publishing slots are available today.', 'wp-auto-publishing-queue' ),
 			'schedule_error'    => __( 'Today\'s schedule could not be generated.', 'wp-auto-publishing-queue' ),
+			'date_blocked'      => __( 'Publishing is blocked for this date. Adjust your blocking rules in Settings if this is unexpected.', 'wp-auto-publishing-queue' ),
 			'processor_disabled' => __( 'Automatic publishing is disabled. Enable it from Settings before running the processor.', 'wp-auto-publishing-queue' ),
 			'processor_locked'   => __( 'The queue processor is already running. Please try again shortly.', 'wp-auto-publishing-queue' ),
 		);
@@ -663,6 +673,10 @@ class WPAPQ_Queue_Page {
 		$result = $this->scheduler->generate_schedule_for_date( null, $force );
 
 		if ( is_wp_error( $result ) ) {
+			if ( 'wpapq_date_blocked' === $result->get_error_code() ) {
+				$this->redirect_with_notice( admin_url( 'admin.php?page=wpapq-queue' ), 'date_blocked' );
+			}
+
 			$this->redirect_with_notice( admin_url( 'admin.php?page=wpapq-queue' ), 'schedule_error' );
 		}
 

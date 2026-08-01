@@ -5,7 +5,7 @@ Author URI: https://bloggingshout.com
 Tags: publishing, queue, drafts, wp-cron
 Requires at least: 6.0
 Requires PHP: 7.4
-Stable tag: 1.0.0
+Stable tag: 1.1.0
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -32,6 +32,9 @@ The plugin includes:
 * Admin email notifications for permanent failures, empty queue, and low queue.
 * Overview, Queue, Logs, and Settings admin pages.
 * A WordPress dashboard widget.
+* Random posts-per-day mode (a min/max range instead of a fixed number).
+* Block publishing on specific weekdays and/or specific dates, with automatic rescheduling of any posts already scheduled on a date that becomes blocked.
+* A Clear All Logs option on the Publishing Logs page.
 
 Only standard WordPress posts with draft status can be queued. Pages, custom post types, and non-draft posts are not managed by this version.
 
@@ -161,9 +164,14 @@ Only draft posts can remain queued. If a queued post is manually published, tras
 
 == Changelog ==
 
+= 1.1.0 =
+* New: Clear All Logs button on the Publishing Logs page.
+* New: Random posts-per-day mode (choose a min/max range instead of a fixed number).
+* New: Block publishing on specific weekdays and/or specific dates.
+* New: Posts already scheduled on a date that becomes blocked are automatically released and rescheduled onto the next valid day, respecting the normal gap and window rules.
+
+= 1.0.1 =
+* Fix: minimum gap between posts is now enforced across separate schedule generation calls, not just within a single call.
+
 = 1.0.0 =
 * Production MVP release.
-
-Stable tag:
-= 1.0.1 =
-   * Fix: minimum gap between posts is now enforced across separate schedule generation calls, not just within a single call.

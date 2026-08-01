@@ -63,10 +63,15 @@ class WPAPQ_Activator {
 			'publishing_start'    => '09:00',
 			'publishing_end'      => '23:59',
 			'posts_per_day'       => 3,
+			'posts_per_day_mode'  => 'fixed',
+			'posts_per_day_min'   => 1,
+			'posts_per_day_max'   => 5,
 			'minimum_gap_minutes' => 60,
 			'maximum_retries'     => 3,
 			'retry_interval'      => 10,
 			'low_queue_threshold' => 5,
+			'blocked_weekdays'    => array(),
+			'blocked_dates'       => array(),
 		);
 	}
 

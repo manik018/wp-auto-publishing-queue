@@ -44,6 +44,7 @@ class WPAPQ_Admin {
 		add_action( 'admin_init', array( $this, 'register_settings' ) );
 		add_action( 'wp_dashboard_setup', array( $this, 'register_dashboard_widget' ) );
 		$this->queue_page->run();
+		$this->logs_page->run();
 	}
 
 	/**
@@ -133,6 +134,13 @@ class WPAPQ_Admin {
 		);
 
 		add_settings_section(
+			'wpapq_blocking_section',
+			__( 'Blocking', 'wp-auto-publishing-queue' ),
+			'__return_false',
+			'wpapq-settings'
+		);
+
+		add_settings_section(
 			'wpapq_notification_section',
 			__( 'Notification Settings', 'wp-auto-publishing-queue' ),
 			array( $this, 'render_notification_section' ),
@@ -168,13 +176,15 @@ class WPAPQ_Admin {
 			'wpapq_schedule_section'
 		);
 
-		$this->add_number_field(
+		add_settings_field(
 			'wpapq_posts_per_day',
 			__( 'Posts Per Day', 'wp-auto-publishing-queue' ),
-			'posts_per_day',
+			array( $this, 'render_posts_per_day_field' ),
+			'wpapq-settings',
 			'wpapq_schedule_section',
-			1,
-			100
+			array(
+				'label_for' => 'wpapq_posts_per_day',
+			)
 		);
 
 		$this->add_number_field(
@@ -216,6 +226,22 @@ class WPAPQ_Admin {
 			'',
 			__( 'Send an admin notification when the number of queued posts drops below this value. Set to 0 to disable the low queue alert.', 'wp-auto-publishing-queue' )
 		);
+
+		add_settings_field(
+			'wpapq_blocked_weekdays',
+			__( 'Blocked Weekdays', 'wp-auto-publishing-queue' ),
+			array( $this, 'render_blocked_weekdays_field' ),
+			'wpapq-settings',
+			'wpapq_blocking_section'
+		);
+
+		add_settings_field(
+			'wpapq_blocked_dates',
+			__( 'Blocked Dates', 'wp-auto-publishing-queue' ),
+			array( $this, 'render_blocked_dates_field' ),
+			'wpapq-settings',
+			'wpapq_blocking_section'
+		);
 	}
 
 	/**
@@ -227,6 +253,9 @@ class WPAPQ_Admin {
 		}
 
 		$metrics      = $this->get_status_metrics();
+		$settings     = $this->get_settings();
+		$scheduler    = new WPAPQ_Scheduler();
+		$today        = WPAPQ_Helper::get_current_datetime()->format( 'Y-m-d' );
 		$queue_url    = admin_url( 'admin.php?page=wpapq-queue' );
 		$logs_url     = admin_url( 'admin.php?page=wpapq-logs' );
 		$settings_url = admin_url( 'admin.php?page=wpapq-settings' );
@@ -236,6 +265,11 @@ class WPAPQ_Admin {
 			<div class="notice notice-info">
 				<p><?php echo esc_html__( 'Automatic publishing relies on WP-Cron, which only runs when your site receives traffic. On low-traffic or heavily cached sites, posts may publish later than scheduled. For exact timing, set up a real server cron job that calls wp-cron.php every 5 minutes.', 'wp-auto-publishing-queue' ); ?></p>
 			</div>
+			<?php if ( $scheduler->is_date_blocked( $today, $settings ) ) : ?>
+				<div class="notice notice-warning">
+					<p><?php echo esc_html__( 'Publishing is blocked today due to your weekday or date blocking rules in Settings. No posts will be published today.', 'wp-auto-publishing-queue' ); ?></p>
+				</div>
+			<?php endif; ?>
 			<table class="widefat striped">
 				<tbody>
 					<tr>
@@ -371,17 +405,57 @@ class WPAPQ_Admin {
 
 		$base  = $this->normalize_settings( array_merge( $defaults, $current ) );
 		$input = is_array( $input ) ? $input : array();
+		$posts_per_day_mode = isset( $input['posts_per_day_mode'] ) && is_scalar( $input['posts_per_day_mode'] ) ? sanitize_key( wp_unslash( $input['posts_per_day_mode'] ) ) : '';
 
 		$sanitized = array(
 			'enabled'             => isset( $input['enabled'] ) ? 1 : 0,
 			'publishing_start'    => $this->sanitize_time_value( $input, 'publishing_start', $base['publishing_start'] ),
 			'publishing_end'      => $this->sanitize_time_value( $input, 'publishing_end', $base['publishing_end'] ),
 			'posts_per_day'       => $this->sanitize_integer_value( $input, 'posts_per_day', 1, 100, $base['posts_per_day'] ),
+			'posts_per_day_mode'  => in_array( $posts_per_day_mode, array( 'fixed', 'random' ), true ) ? $posts_per_day_mode : 'fixed',
+			'posts_per_day_min'   => $this->sanitize_integer_value( $input, 'posts_per_day_min', 1, 100, $base['posts_per_day_min'] ),
+			'posts_per_day_max'   => $this->sanitize_integer_value( $input, 'posts_per_day_max', 1, 100, $base['posts_per_day_max'] ),
 			'minimum_gap_minutes' => $this->sanitize_integer_value( $input, 'minimum_gap_minutes', 1, 1440, $base['minimum_gap_minutes'] ),
 			'maximum_retries'     => $this->sanitize_integer_value( $input, 'maximum_retries', 1, 10, $base['maximum_retries'] ),
 			'retry_interval'      => $this->sanitize_integer_value( $input, 'retry_interval', 1, 1440, $base['retry_interval'] ),
 			'low_queue_threshold' => $this->sanitize_integer_value( $input, 'low_queue_threshold', 0, 1000, $base['low_queue_threshold'] ),
 		);
+
+		if ( $sanitized['posts_per_day_min'] > $sanitized['posts_per_day_max'] ) {
+			$sanitized['posts_per_day_max'] = $sanitized['posts_per_day_min'];
+		}
+
+		$blocked_weekdays = isset( $input['blocked_weekdays'] ) && is_array( $input['blocked_weekdays'] ) ? $input['blocked_weekdays'] : array();
+		$blocked_weekdays = array_map( 'absint', $blocked_weekdays );
+		$blocked_weekdays = array_filter(
+			$blocked_weekdays,
+			function ( $day ) {
+				return $day >= 0 && $day <= 6;
+			}
+		);
+		$blocked_weekdays = array_unique( $blocked_weekdays );
+		sort( $blocked_weekdays, SORT_NUMERIC );
+
+		$blocked_dates_raw = isset( $input['blocked_dates'] ) && is_scalar( $input['blocked_dates'] ) ? sanitize_textarea_field( wp_unslash( $input['blocked_dates'] ) ) : '';
+		$blocked_dates     = preg_split( '/[\r\n,]+/', $blocked_dates_raw );
+		$blocked_dates     = array_map( 'trim', is_array( $blocked_dates ) ? $blocked_dates : array() );
+		$blocked_dates     = array_filter(
+			$blocked_dates,
+			function ( $date ) {
+				if ( 1 !== preg_match( '/\A\d{4}-\d{2}-\d{2}\z/', $date ) ) {
+					return false;
+				}
+
+				$parts = explode( '-', $date );
+
+				return checkdate( absint( $parts[1] ), absint( $parts[2] ), absint( $parts[0] ) );
+			}
+		);
+		$blocked_dates     = array_unique( $blocked_dates );
+		sort( $blocked_dates, SORT_STRING );
+
+		$sanitized['blocked_weekdays'] = array_values( $blocked_weekdays );
+		$sanitized['blocked_dates']    = array_slice( array_values( $blocked_dates ), 0, 366 );
 
 		$start_minutes = $this->time_to_minutes( $sanitized['publishing_start'] );
 		$end_minutes   = $this->time_to_minutes( $sanitized['publishing_end'] );
@@ -399,7 +473,8 @@ class WPAPQ_Admin {
 		}
 
 		$available_window_minutes = $end_minutes - $start_minutes;
-		$required_gap_minutes     = ( $sanitized['posts_per_day'] - 1 ) * $sanitized['minimum_gap_minutes'];
+		$effective_daily_count    = ( 'random' === $sanitized['posts_per_day_mode'] ) ? $sanitized['posts_per_day_max'] : $sanitized['posts_per_day'];
+		$required_gap_minutes     = ( $effective_daily_count - 1 ) * $sanitized['minimum_gap_minutes'];
 
 		if ( $required_gap_minutes > $available_window_minutes ) {
 			$this->restore_schedule_settings( $sanitized, $base );
@@ -524,6 +599,131 @@ class WPAPQ_Admin {
 		<?php if ( '' !== $args['description'] ) : ?>
 			<p class="description"><?php echo esc_html( $args['description'] ); ?></p>
 		<?php endif; ?>
+		<?php
+	}
+
+	/**
+	 * Render the posts per day mode and values.
+	 */
+	public function render_posts_per_day_field() {
+		$settings = $this->get_settings();
+		?>
+		<p>
+			<label>
+				<input type="radio" name="wpapq_settings[posts_per_day_mode]" value="fixed" <?php checked( 'fixed', $settings['posts_per_day_mode'] ); ?> />
+				<?php echo esc_html__( 'Fixed amount', 'wp-auto-publishing-queue' ); ?>
+			</label>
+			<br />
+			<label>
+				<input type="radio" name="wpapq_settings[posts_per_day_mode]" value="random" <?php checked( 'random', $settings['posts_per_day_mode'] ); ?> />
+				<?php echo esc_html__( 'Random amount (pick a range)', 'wp-auto-publishing-queue' ); ?>
+			</label>
+		</p>
+		<div id="wpapq-fixed-per-day-row">
+			<input
+				type="number"
+				id="wpapq_posts_per_day"
+				name="wpapq_settings[posts_per_day]"
+				value="<?php echo esc_attr( $settings['posts_per_day'] ); ?>"
+				min="1"
+				max="100"
+				step="1"
+			/>
+		</div>
+		<div id="wpapq-random-per-day-row">
+			<p>
+				<label for="wpapq_posts_per_day_min"><?php echo esc_html__( 'Minimum Posts Per Day', 'wp-auto-publishing-queue' ); ?></label>
+				<br />
+				<input
+					type="number"
+					id="wpapq_posts_per_day_min"
+					name="wpapq_settings[posts_per_day_min]"
+					value="<?php echo esc_attr( $settings['posts_per_day_min'] ); ?>"
+					min="1"
+					max="100"
+					step="1"
+				/>
+			</p>
+			<p>
+				<label for="wpapq_posts_per_day_max"><?php echo esc_html__( 'Maximum Posts Per Day', 'wp-auto-publishing-queue' ); ?></label>
+				<br />
+				<input
+					type="number"
+					id="wpapq_posts_per_day_max"
+					name="wpapq_settings[posts_per_day_max]"
+					value="<?php echo esc_attr( $settings['posts_per_day_max'] ); ?>"
+					min="1"
+					max="100"
+					step="1"
+				/>
+			</p>
+		</div>
+		<script>
+			(function() {
+				var fixedRow = document.getElementById('wpapq-fixed-per-day-row');
+				var randomRow = document.getElementById('wpapq-random-per-day-row');
+				var radios = document.querySelectorAll('input[name="wpapq_settings[posts_per_day_mode]"]');
+				var toggleRows = function() {
+					var selected = document.querySelector('input[name="wpapq_settings[posts_per_day_mode]"]:checked');
+					var isRandom = selected && 'random' === selected.value;
+
+					if (fixedRow) {
+						fixedRow.style.display = isRandom ? 'none' : '';
+					}
+
+					if (randomRow) {
+						randomRow.style.display = isRandom ? '' : 'none';
+					}
+				};
+
+				for (var index = 0; index < radios.length; index++) {
+					radios[index].addEventListener('change', toggleRows);
+				}
+
+				toggleRows();
+			}());
+		</script>
+		<?php
+	}
+
+	/**
+	 * Render blocked weekdays.
+	 */
+	public function render_blocked_weekdays_field() {
+		$settings = $this->get_settings();
+		$days     = array(
+			0 => __( 'Sunday', 'wp-auto-publishing-queue' ),
+			1 => __( 'Monday', 'wp-auto-publishing-queue' ),
+			2 => __( 'Tuesday', 'wp-auto-publishing-queue' ),
+			3 => __( 'Wednesday', 'wp-auto-publishing-queue' ),
+			4 => __( 'Thursday', 'wp-auto-publishing-queue' ),
+			5 => __( 'Friday', 'wp-auto-publishing-queue' ),
+			6 => __( 'Saturday', 'wp-auto-publishing-queue' ),
+		);
+		?>
+		<?php foreach ( $days as $day => $label ) : ?>
+			<label>
+				<input
+					type="checkbox"
+					name="wpapq_settings[blocked_weekdays][]"
+					value="<?php echo esc_attr( $day ); ?>"
+					<?php checked( in_array( $day, $settings['blocked_weekdays'], true ) ); ?>
+				/>
+				<?php echo esc_html( $label ); ?>
+			</label>
+			<br />
+		<?php endforeach; ?>
+		<?php
+	}
+
+	/**
+	 * Render blocked dates.
+	 */
+	public function render_blocked_dates_field() {
+		$settings = $this->get_settings();
+		?>
+		<textarea name="wpapq_settings[blocked_dates]" rows="4" class="large-text"><?php echo esc_textarea( implode( "\n", $settings['blocked_dates'] ) ); ?></textarea>
+		<p class="description"><?php echo esc_html__( 'One date per line, format YYYY-MM-DD. Publishing will be skipped entirely on these dates.', 'wp-auto-publishing-queue' ); ?></p>
 		<?php
 	}
 
@@ -666,10 +866,15 @@ class WPAPQ_Admin {
 			'publishing_start'    => $this->is_valid_time( $settings['publishing_start'] ) ? $settings['publishing_start'] : $defaults['publishing_start'],
 			'publishing_end'      => $this->is_valid_time( $settings['publishing_end'] ) ? $settings['publishing_end'] : $defaults['publishing_end'],
 			'posts_per_day'       => $this->clamp_integer( absint( $settings['posts_per_day'] ), 1, 100 ),
+			'posts_per_day_mode'  => in_array( $settings['posts_per_day_mode'] ?? '', array( 'fixed', 'random' ), true ) ? $settings['posts_per_day_mode'] : 'fixed',
+			'posts_per_day_min'   => $this->clamp_integer( absint( $settings['posts_per_day_min'] ?? 1 ), 1, 100 ),
+			'posts_per_day_max'   => $this->clamp_integer( absint( $settings['posts_per_day_max'] ?? 5 ), 1, 100 ),
 			'minimum_gap_minutes' => $this->clamp_integer( absint( $settings['minimum_gap_minutes'] ), 1, 1440 ),
 			'maximum_retries'     => $this->clamp_integer( absint( $settings['maximum_retries'] ), 1, 10 ),
 			'retry_interval'      => $this->clamp_integer( absint( $settings['retry_interval'] ), 1, 1440 ),
 			'low_queue_threshold' => $this->clamp_integer( absint( $settings['low_queue_threshold'] ), 0, 1000 ),
+			'blocked_weekdays'    => is_array( $settings['blocked_weekdays'] ?? null ) ? $settings['blocked_weekdays'] : array(),
+			'blocked_dates'       => is_array( $settings['blocked_dates'] ?? null ) ? $settings['blocked_dates'] : array(),
 		);
 	}
 
@@ -772,6 +977,9 @@ class WPAPQ_Admin {
 		$sanitized['publishing_start']    = $base['publishing_start'];
 		$sanitized['publishing_end']      = $base['publishing_end'];
 		$sanitized['posts_per_day']       = $base['posts_per_day'];
+		$sanitized['posts_per_day_mode']  = $base['posts_per_day_mode'];
+		$sanitized['posts_per_day_min']   = $base['posts_per_day_min'];
+		$sanitized['posts_per_day_max']   = $base['posts_per_day_max'];
 		$sanitized['minimum_gap_minutes'] = $base['minimum_gap_minutes'];
 	}
 }

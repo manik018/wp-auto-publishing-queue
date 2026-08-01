@@ -23,6 +23,9 @@ WP Auto Publishing Queue lets you add standard draft posts to a queue and have t
 - Dashboard widget showing queue status at a glance
 - Email notifications for permanent failures, an empty queue, or a low queue
 - Respects your site's WordPress timezone setting
+- Random posts-per-day mode (a min/max range instead of a fixed number)
+- Block publishing on specific weekdays and/or specific dates, with posts already scheduled on a date that becomes blocked automatically rescheduled onto the next valid day
+- Clear All Logs option on the Publishing Logs page
 
 Only standard WordPress posts with `draft` status can be queued. Pages and custom post types are not supported in this version.
 

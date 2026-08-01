@@ -124,6 +124,8 @@ class WPAPQ_Cron {
 			'skipped'   => 0,
 			'disabled'  => false,
 			'locked'    => false,
+			'blocked'   => false,
+			'released'  => 0,
 		);
 
 		if ( ! $this->is_enabled() ) {
@@ -131,8 +133,20 @@ class WPAPQ_Cron {
 			return $result;
 		}
 
+		$settings = get_option( 'wpapq_settings', array() );
+		$settings = is_array( $settings ) ? array_merge( WPAPQ_Activator::get_default_settings(), $settings ) : WPAPQ_Activator::get_default_settings();
+		$today    = WPAPQ_Helper::get_current_datetime()->format( 'Y-m-d' );
+		$released = $this->scheduler->release_blocked_schedule( $settings );
+
+		$result['released'] = $released;
+
 		if ( get_transient( self::LOCK ) ) {
 			$result['locked'] = true;
+			return $result;
+		}
+
+		if ( $this->scheduler->is_date_blocked( $today, $settings ) ) {
+			$result['blocked'] = true;
 			return $result;
 		}
 
