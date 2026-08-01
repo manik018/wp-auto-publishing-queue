@@ -164,8 +164,6 @@ Only draft posts can remain queued. If a queued post is manually published, tras
 
 == Changelog ==
 
-== Changelog ==
-
 = 1.1.0 =
 * New: Clear All Logs button on the Publishing Logs page.
 * New: Random posts-per-day mode (choose a min/max range instead of a fixed number).
